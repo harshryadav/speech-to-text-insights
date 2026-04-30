@@ -1,0 +1,51 @@
+# =============================================================================
+# Speech-to-Text Insights — Python Dependencies
+# Install: pip install -r requirements.txt
+# =============================================================================
+
+# --- ASR (Automatic Speech Recognition) ---
+openai-whisper>=20231117
+
+# --- NLP / Transformers ---
+transformers>=4.36.0
+torch>=2.1.0
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+
+# --- Extractive Summarization ---
+sumy>=0.11.0
+networkx>=3.2
+
+# --- Text Processing ---
+nltk>=3.8.1
+spacy>=3.7.0
+regex>=2023.10.3
+
+# --- Evaluation ---
+rouge-score>=0.1.2
+bert-score>=0.3.13
+
+# --- Audio ---
+librosa>=0.10.1
+soundfile>=0.12.1
+pydub>=0.25.1
+
+# --- Data & Configuration ---
+pandas>=2.1.0
+numpy>=1.24.0
+pyyaml>=6.0.1
+datasets>=2.16.0
+
+# --- Visualization ---
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# --- Web Application ---
+streamlit>=1.29.0
+
+# --- Testing ---
+pytest>=7.4.0
+
+# --- Utilities ---
+tqdm>=4.66.0

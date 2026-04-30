@@ -1,0 +1,36 @@
+# --- Data (too large for git) ---
+data/raw/
+data/transcripts/
+data/processed/
+data/reference_summaries/
+
+# --- Model weights ---
+models/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Keep sample data and results tracked ---
+!data/samples/

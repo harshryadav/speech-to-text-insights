@@ -1,0 +1,95 @@
+# =============================================================================
+# Speech-to-Text Insights — Master Configuration
+#
+# All hyperparameters, model names, and paths live here.
+# Modules load this via src/utils.py:load_config() — never hardcode these.
+# =============================================================================
+
+# --- Reproducibility ---
+seed: 42
+
+# --- Whisper ASR ---
+whisper:
+  model_size: "base"            # tiny | base | small | medium | large
+  language: "en"
+  task: "transcribe"            # transcribe | translate
+
+# --- Preprocessing ---
+preprocessing:
+  remove_fillers: true
+  filler_words:
+    - "um"
+    - "uh"
+    - "erm"
+    - "ah"
+    - "eh"
+    - "like"
+    - "you know"
+    - "i mean"
+    - "sort of"
+    - "kind of"
+    - "basically"
+    - "actually"
+    - "literally"
+    - "right"
+    - "okay so"
+    - "so yeah"
+  normalize_whitespace: true
+  sentence_method: "nltk"       # nltk | spacy
+
+# --- Chunking ---
+# Uses word counts as a proxy for tokens (no extra HF download).
+chunking:
+  strategy: "sentence"          # sentence | token
+  max_chunk_tokens: 800
+  overlap_sentences: 2
+
+# --- Summarization ---
+summarization:
+  extractive:
+    method: "textrank"
+    num_sentences: 5
+    language: "english"
+
+  abstractive:
+    bart:
+      model_name: "facebook/bart-large-cnn"
+      max_input_tokens: 1024
+      max_summary_length: 256
+      min_summary_length: 56
+      num_beams: 4
+      length_penalty: 2.0
+      no_repeat_ngram_size: 3
+
+    t5:
+      # model_name: "t5-base"
+      model_name: "google/flan-t5-base"
+      max_input_tokens: 512
+      max_summary_length: 256
+      min_summary_length: 56
+      num_beams: 4
+      length_penalty: 2.0
+      no_repeat_ngram_size: 3
+
+  hierarchical: true            # two-pass summarization for long inputs
+
+# --- Evaluation ---
+evaluation:
+  rouge_types:
+    - "rouge1"
+    - "rouge2"
+    - "rougeL"
+  use_bertscore: true
+  bertscore_model: "roberta-large"
+
+# --- Paths ---
+paths:
+  raw_audio: "data/raw"
+  transcripts: "data/transcripts"
+  processed: "data/processed"
+  reference_summaries: "data/reference_summaries"
+  samples: "data/samples"
+  results: "results"
+  rouge_scores: "results/rouge_scores"
+  plots: "results/plots"
+  models_cache: "models"
