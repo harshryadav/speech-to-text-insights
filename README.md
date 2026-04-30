@@ -180,6 +180,3 @@ See the `docs/` folder for detailed technical documentation:
 2. Lewis et al. (2019). [BART: Denoising Sequence-to-Sequence Pre-training.](https://arxiv.org/abs/1910.13461) *arXiv:1910.13461*
 3. Mihalcea & Tarau (2004). [TextRank: Bringing Order into Texts.](https://web.eecs.umich.edu/~mihalcea/papers/mihalcea.emnlp04.pdf) *EMNLP 2004*
 
-## License
-
-MIT
