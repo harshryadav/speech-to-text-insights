@@ -211,7 +211,12 @@ def process_audio(settings: dict) -> dict:
     from src.preprocess import preprocess_transcript
     from src.chunking import chunk_text
     from src.summarize_extractive import textrank_summarize
-    from src.evaluate import compute_rouge, compute_meteor, compute_chrf
+    from src.evaluate import (
+        assess_reference_quality,
+        compute_chrf,
+        compute_meteor,
+        compute_rouge,
+    )
     from src.transcribe import FFmpegNotFoundError
 
     results = {"timings": {}}
@@ -316,6 +321,16 @@ def process_audio(settings: dict) -> dict:
     # --- Evaluation (if reference provided) ---
     if settings["reference_file"]:
         reference = settings["reference_file"].read().decode("utf-8").strip()
+
+        # Sanity-check the reference against the cleaned transcript. A common
+        # mistake is uploading the full transcript as the "reference summary",
+        # which silently inflates extractive baselines on overlap-based
+        # metrics. The result is rendered as a banner in the Evaluation tab.
+        results["reference_quality"] = assess_reference_quality(
+            reference=reference,
+            source=preprocessed["cleaned"],
+        )
+
         evaluation = {}
         for method, summary in summaries.items():
             try:
@@ -440,6 +455,26 @@ def render_evaluation_tab(results: dict):
             "Upload a reference summary in the sidebar to see evaluation scores."
         )
         return
+
+    # Warn loudly when the uploaded reference appears to be the source
+    # transcript itself. Without this banner, a tester could conclude
+    # "TextRank wins" from numbers that are really just rewarding sentence
+    # copying — see fix #3 in the project chat history for the motivating run.
+    quality = results.get("reference_quality")
+    if quality and quality["is_suspicious"]:
+        bullet_reasons = "\n".join(f"- {r}" for r in quality["reasons"])
+        st.warning(
+            "**Your reference summary looks like the source transcript "
+            "itself, not a summary.**\n\n"
+            f"{bullet_reasons}\n\n"
+            "ROUGE, METEOR, and chrF all measure overlap with the reference, "
+            "so when the reference *is* the source, **extractive methods like "
+            "TextRank will appear to win** simply because they copy source "
+            "sentences verbatim. BERTScore is somewhat more robust but is "
+            "still affected. For a fair comparison, upload a short reference "
+            "summary (typically 5–30% of the source length) that paraphrases "
+            "the key points."
+        )
 
     import pandas as pd
 

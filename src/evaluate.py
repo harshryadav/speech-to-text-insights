@@ -285,6 +285,86 @@ def compute_chrf(
 
 
 # ---------------------------------------------------------------------------
+# Reference-quality sanity check
+# ---------------------------------------------------------------------------
+
+# A "real" abstractive summary is usually 5–30% of the source length. Anything
+# above this fraction is more excerpt than summary and tends to inflate
+# extractive baselines on ROUGE/METEOR/chrF.
+_SUSPICIOUS_LENGTH_RATIO = 0.5
+
+# ROUGE-1 F1 between the reference and the source. A genuine summary
+# paraphrases the source, so an overlap above this threshold strongly suggests
+# the "reference" is the source itself (or a near-copy).
+_SUSPICIOUS_OVERLAP_F1 = 0.7
+
+
+def assess_reference_quality(reference: str, source: str) -> dict:
+    """
+    Sanity-check whether a user-provided reference summary actually *is* a
+    summary, or whether it looks like the source transcript itself.
+
+    A frequent mistake — and one that silently corrupts ROUGE comparisons — is
+    uploading the full transcript as the "reference summary". In that case
+    extractive methods (TextRank) appear far stronger than abstractive ones
+    (BART/T5) only because they copy source sentences verbatim, not because
+    they produce better summaries.
+
+    The check uses two complementary heuristics:
+
+    * **Length ratio** — words(reference) / words(source). Real summaries
+      compress aggressively; a ratio above ~0.5 is unusual.
+    * **Lexical overlap** — ROUGE-1 F1 between reference and source. Real
+      summaries paraphrase; a ratio above ~0.7 indicates near-verbatim copy.
+
+    Args:
+        reference: The text the user uploaded as a reference summary.
+        source:    The (cleaned) transcript that summaries were generated from.
+
+    Returns:
+        Dict with:
+
+        - ``length_ratio`` (float): ``ref_words / max(source_words, 1)``.
+        - ``overlap_rouge1`` (float | None): ROUGE-1 F1, or ``None`` if either
+          input was empty.
+        - ``is_suspicious`` (bool): True if either heuristic crosses its threshold.
+        - ``reasons`` (list[str]): Human-readable explanations for the warning.
+    """
+    ref_words = len(reference.split()) if reference else 0
+    src_words = len(source.split()) if source else 0
+    length_ratio = round(ref_words / max(src_words, 1), 4)
+
+    overlap_rouge1: Optional[float] = None
+    if reference.strip() and source.strip():
+        try:
+            overlap_rouge1 = compute_rouge(
+                reference, source, rouge_types=["rouge1"]
+            )["rouge1"]["f1"]
+        except ValueError:
+            overlap_rouge1 = None
+
+    reasons: list[str] = []
+    if length_ratio > _SUSPICIOUS_LENGTH_RATIO:
+        reasons.append(
+            f"reference is {length_ratio:.0%} of the source length "
+            f"({ref_words} vs {src_words} words) — a real summary is usually "
+            "5–30% of the source"
+        )
+    if overlap_rouge1 is not None and overlap_rouge1 > _SUSPICIOUS_OVERLAP_F1:
+        reasons.append(
+            f"reference shares {overlap_rouge1:.0%} ROUGE-1 overlap with the "
+            "source — a genuine summary paraphrases rather than copies"
+        )
+
+    return {
+        "length_ratio": length_ratio,
+        "overlap_rouge1": overlap_rouge1,
+        "is_suspicious": bool(reasons),
+        "reasons": reasons,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Batch Evaluation
 # ---------------------------------------------------------------------------
 
