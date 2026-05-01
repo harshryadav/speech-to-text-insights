@@ -8,6 +8,7 @@ Run with (from activated venv): python -m streamlit run app.py
 """
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -95,8 +96,6 @@ def try_load_hf_summarizer(model_name: str):
     Returns None if the model cannot be downloaded or configured (common on
     corporate VPNs that block huggingface.co).
     """
-    import logging
-
     from src.summarize_abstractive import AbstractiveSummarizer
 
     log = logging.getLogger(__name__)
@@ -212,7 +211,7 @@ def process_audio(settings: dict) -> dict:
     from src.preprocess import preprocess_transcript
     from src.chunking import chunk_text
     from src.summarize_extractive import textrank_summarize
-    from src.evaluate import compute_rouge
+    from src.evaluate import compute_rouge, compute_meteor, compute_chrf
     from src.transcribe import FFmpegNotFoundError
 
     results = {"timings": {}}
@@ -323,6 +322,24 @@ def process_audio(settings: dict) -> dict:
                 evaluation[method] = compute_rouge(summary, reference)
             except ValueError:
                 evaluation[method] = {"error": "Could not compute ROUGE"}
+                continue
+
+            # METEOR + chrF are cheap (ms each, no model download beyond a
+            # one-time NLTK WordNet corpus). They are always computed alongside
+            # ROUGE and degrade gracefully if their backends are unavailable.
+            try:
+                evaluation[method]["meteor"] = compute_meteor(summary, reference)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "METEOR failed for %s: %s", method, exc
+                )
+
+            try:
+                evaluation[method]["chrf"] = compute_chrf(summary, reference)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "chrF failed for %s: %s", method, exc
+                )
 
         # Optional BERTScore — opt-in because the embedding model is ~1.4 GB
         # and cold-start can take a while on CPU. Computed once for all
@@ -429,6 +446,8 @@ def render_evaluation_tab(results: dict):
     eval_data = results["evaluation"]
     rows = []
     any_bertscore = False
+    any_meteor = False
+    any_chrf = False
     for method, scores in eval_data.items():
         if "error" in scores:
             continue
@@ -438,6 +457,12 @@ def render_evaluation_tab(results: dict):
             "ROUGE-2 (F1)": scores["rouge2"]["f1"],
             "ROUGE-L (F1)": scores["rougeL"]["f1"],
         }
+        if "meteor" in scores:
+            row["METEOR"] = scores["meteor"]
+            any_meteor = True
+        if "chrf" in scores:
+            row["chrF"] = scores["chrf"]
+            any_chrf = True
         if "bertscore" in scores:
             row["BERTScore (F1)"] = scores["bertscore"]["f1"]
             any_bertscore = True
@@ -447,8 +472,19 @@ def render_evaluation_tab(results: dict):
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Bar chart includes BERTScore as a fourth metric group when available.
+        # Bar chart spans every available metric (ROUGE always, METEOR/chrF
+        # when computed, BERTScore when the user opted in). All values are
+        # normalized to [0, 1] in src.evaluate so they share one y-axis.
         import plotly.express as px
+
+        extra_titles = []
+        if any_meteor or any_chrf:
+            extra_titles.append("METEOR/chrF")
+        if any_bertscore:
+            extra_titles.append("BERTScore")
+        title = "ROUGE Score Comparison" if not extra_titles else (
+            "ROUGE + " + " + ".join(extra_titles) + " Comparison"
+        )
 
         df_melted = df.melt(id_vars="Model", var_name="Metric", value_name="Score")
         fig = px.bar(
@@ -457,27 +493,36 @@ def render_evaluation_tab(results: dict):
             y="Score",
             color="Model",
             barmode="group",
-            title=(
-                "ROUGE + BERTScore Comparison"
-                if any_bertscore
-                else "ROUGE Score Comparison"
-            ),
+            title=title,
         )
         fig.update_layout(yaxis_range=[0, 1])
         st.plotly_chart(fig, use_container_width=True)
 
+        captions = []
+        if any_meteor:
+            captions.append(
+                "**METEOR** aligns words by exact match → stem → WordNet synonym, "
+                "so it credits paraphrase that ROUGE penalizes."
+            )
+        if any_chrf:
+            captions.append(
+                "**chrF** is the F-score over character n-grams; robust to "
+                "morphology and minor word-order changes. Reported on a 0–1 scale "
+                "(sacrebleu's native 0–100 divided by 100)."
+            )
         if any_bertscore:
-            st.caption(
-                "BERTScore measures semantic similarity via contextual embeddings "
-                "(roberta-large). It tends to credit paraphrase that ROUGE misses, "
-                "so abstractive models (BART/T5) often score relatively higher here "
-                "than on ROUGE."
+            captions.append(
+                "**BERTScore** measures semantic similarity via contextual "
+                "embeddings (roberta-large). Values for unrelated text typically "
+                "still sit around 0.80, so look at *relative* differences."
             )
         elif results["evaluation"]:
-            st.caption(
+            captions.append(
                 "Tip: enable **Compute BERTScore** in the sidebar for a semantic "
                 "similarity score that complements ROUGE's n-gram overlap."
             )
+        if captions:
+            st.caption("  \n".join(captions))
 
 
 def render_stats_tab(results: dict):

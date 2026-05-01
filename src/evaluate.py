@@ -196,6 +196,95 @@ def compute_bertscore_per_pair(
 
 
 # ---------------------------------------------------------------------------
+# METEOR
+# ---------------------------------------------------------------------------
+
+def compute_meteor(prediction: str, reference: str) -> float:
+    """
+    Compute METEOR (Banerjee & Lavie, 2005) between a prediction and reference.
+
+    METEOR improves on ROUGE/BLEU by aligning words via:
+      1. exact match  →  2. stemmed match  →  3. WordNet synonym match,
+    then computing F-mean weighted toward recall, with a penalty for
+    fragmented (out-of-order) matches. It correlates noticeably better with
+    human judgement than ROUGE on summarization tasks.
+
+    Args:
+        prediction: Generated summary text.
+        reference:  Reference summary text.
+
+    Returns:
+        METEOR score in ``[0, 1]``, rounded to 4 decimals. Returns ``0.0`` if
+        either input is empty (consistent with NLTK's behavior on no overlap).
+
+    Raises:
+        LookupError: If NLTK's WordNet corpus cannot be downloaded
+            (e.g. behind a strict firewall). The first call attempts
+            ``nltk.download("wordnet")`` automatically.
+    """
+    if not prediction or not prediction.strip() or not reference or not reference.strip():
+        return 0.0
+
+    import nltk
+    from nltk.translate.meteor_score import single_meteor_score
+
+    def _tokenize(text: str) -> list[str]:
+        try:
+            return nltk.word_tokenize(text.lower())
+        except LookupError:
+            nltk.download("punkt", quiet=True)
+            nltk.download("punkt_tab", quiet=True)
+            return nltk.word_tokenize(text.lower())
+
+    try:
+        from nltk.corpus import wordnet
+        wordnet.synsets("test")  # triggers LookupError if corpus missing
+    except LookupError:
+        nltk.download("wordnet", quiet=True)
+        nltk.download("omw-1.4", quiet=True)
+
+    score = single_meteor_score(_tokenize(reference), _tokenize(prediction))
+    return round(float(score), 4)
+
+
+# ---------------------------------------------------------------------------
+# chrF
+# ---------------------------------------------------------------------------
+
+def compute_chrf(
+    prediction: str,
+    reference: str,
+    word_order: int = 0,
+) -> float:
+    """
+    Compute chrF (Popović, 2015) between a prediction and reference.
+
+    chrF is the F-score over character n-grams (default n=6). It is robust
+    to morphology and minor word-order differences, complementing token-based
+    metrics like ROUGE. Setting ``word_order=2`` enables **chrF++**, which
+    additionally counts word bigrams (Popović, 2017).
+
+    Args:
+        prediction: Generated summary text.
+        reference:  Reference summary text.
+        word_order: Word n-gram order. ``0`` = chrF (default), ``2`` = chrF++.
+
+    Returns:
+        chrF score normalized to ``[0, 1]`` (sacrebleu reports 0–100 natively;
+        we divide by 100 so the value lines up with ROUGE/METEOR/BERTScore in
+        side-by-side displays). Rounded to 4 decimals.
+    """
+    if not prediction or not prediction.strip() or not reference or not reference.strip():
+        return 0.0
+
+    from sacrebleu.metrics import CHRF
+
+    chrf = CHRF(word_order=word_order)
+    score = chrf.sentence_score(prediction, [reference]).score
+    return round(score / 100.0, 4)
+
+
+# ---------------------------------------------------------------------------
 # Batch Evaluation
 # ---------------------------------------------------------------------------
 
