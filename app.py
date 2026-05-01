@@ -170,6 +170,20 @@ def render_sidebar() -> dict:
         help="Upload a reference summary to compute ROUGE scores.",
     )
 
+    # BERTScore is opt-in because the first run downloads roberta-large
+    # (~1.4 GB) and can take 10–60s on CPU per pipeline run. Once cached,
+    # subsequent runs in the same Streamlit session reuse the loaded model.
+    compute_bertscore = st.sidebar.checkbox(
+        "Compute BERTScore",
+        value=False,
+        help=(
+            "Adds semantic similarity scores (captures paraphrase that ROUGE misses). "
+            "First run downloads roberta-large (~1.4 GB) and is slow on CPU; "
+            "later runs reuse the cached model. Requires a reference summary."
+        ),
+        disabled=reference_file is None,
+    )
+
     # Process button
     process_btn = st.sidebar.button(
         "▶ Process Audio",
@@ -184,6 +198,7 @@ def render_sidebar() -> dict:
         "methods": [m.lower() for m in methods],
         "summary_params": length_map[summary_style],
         "reference_file": reference_file,
+        "compute_bertscore": compute_bertscore,
         "process": process_btn,
     }
 
@@ -308,6 +323,38 @@ def process_audio(settings: dict) -> dict:
                 evaluation[method] = compute_rouge(summary, reference)
             except ValueError:
                 evaluation[method] = {"error": "Could not compute ROUGE"}
+
+        # Optional BERTScore — opt-in because the embedding model is ~1.4 GB
+        # and cold-start can take a while on CPU. Computed once for all
+        # summaries to share the model load.
+        if settings.get("compute_bertscore"):
+            from src.evaluate import compute_bertscore_per_pair
+
+            scorable = [
+                (m, s) for m, s in summaries.items()
+                if s and "error" not in evaluation.get(m, {})
+            ]
+            if scorable:
+                with st.spinner(
+                    "Computing BERTScore (first run downloads roberta-large)..."
+                ):
+                    t0 = time.perf_counter()
+                    try:
+                        per_pair = compute_bertscore_per_pair(
+                            predictions=[s for _, s in scorable],
+                            references=[reference] * len(scorable),
+                        )
+                        for (method, _), bs in zip(scorable, per_pair):
+                            evaluation[method]["bertscore"] = bs
+                        results["timings"]["bertscore"] = round(
+                            time.perf_counter() - t0, 2
+                        )
+                    except Exception as exc:
+                        st.warning(
+                            f"BERTScore could not be computed: {exc}. "
+                            "ROUGE results above are unaffected."
+                        )
+
         results["evaluation"] = evaluation
         results["reference"] = reference
     else:
@@ -381,21 +428,26 @@ def render_evaluation_tab(results: dict):
 
     eval_data = results["evaluation"]
     rows = []
+    any_bertscore = False
     for method, scores in eval_data.items():
         if "error" in scores:
             continue
-        rows.append({
+        row = {
             "Model": method.upper(),
             "ROUGE-1 (F1)": scores["rouge1"]["f1"],
             "ROUGE-2 (F1)": scores["rouge2"]["f1"],
             "ROUGE-L (F1)": scores["rougeL"]["f1"],
-        })
+        }
+        if "bertscore" in scores:
+            row["BERTScore (F1)"] = scores["bertscore"]["f1"]
+            any_bertscore = True
+        rows.append(row)
 
     if rows:
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Bar chart
+        # Bar chart includes BERTScore as a fourth metric group when available.
         import plotly.express as px
 
         df_melted = df.melt(id_vars="Model", var_name="Metric", value_name="Score")
@@ -405,10 +457,27 @@ def render_evaluation_tab(results: dict):
             y="Score",
             color="Model",
             barmode="group",
-            title="ROUGE Score Comparison",
+            title=(
+                "ROUGE + BERTScore Comparison"
+                if any_bertscore
+                else "ROUGE Score Comparison"
+            ),
         )
         fig.update_layout(yaxis_range=[0, 1])
         st.plotly_chart(fig, use_container_width=True)
+
+        if any_bertscore:
+            st.caption(
+                "BERTScore measures semantic similarity via contextual embeddings "
+                "(roberta-large). It tends to credit paraphrase that ROUGE misses, "
+                "so abstractive models (BART/T5) often score relatively higher here "
+                "than on ROUGE."
+            )
+        elif results["evaluation"]:
+            st.caption(
+                "Tip: enable **Compute BERTScore** in the sidebar for a semantic "
+                "similarity score that complements ROUGE's n-gram overlap."
+            )
 
 
 def render_stats_tab(results: dict):

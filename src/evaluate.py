@@ -140,6 +140,61 @@ def compute_bertscore(
     return result
 
 
+def compute_bertscore_per_pair(
+    predictions: list[str],
+    references: list[str],
+    model_type: str = "roberta-large",
+    device: Optional[str] = None,
+) -> list[dict[str, float]]:
+    """
+    Compute BERTScore for each (prediction, reference) pair individually.
+
+    Unlike :func:`compute_bertscore` which returns the average over the batch,
+    this returns one score dict per pair while still doing **a single model
+    forward pass**. This is the right call when you want to report BERTScore
+    per summarization method (e.g. one per BART/T5/TextRank summary) without
+    reloading the embedding model multiple times.
+
+    Args:
+        predictions: List of generated summaries.
+        references:  List of reference summaries (same length).
+        model_type:  Model used for embeddings (default ``"roberta-large"``).
+        device:      ``"cuda"`` or ``"cpu"`` (auto-detected if ``None``).
+
+    Returns:
+        List of ``{"precision", "recall", "f1"}`` dicts, one per pair, each
+        rounded to 4 decimals.
+
+    Raises:
+        ValueError: If list lengths don't match or are empty.
+    """
+    if len(predictions) != len(references):
+        raise ValueError(
+            f"Length mismatch: {len(predictions)} predictions vs {len(references)} references"
+        )
+    if not predictions:
+        raise ValueError("Empty input lists")
+
+    from bert_score import score as bert_score_fn
+
+    P, R, F1 = bert_score_fn(
+        predictions,
+        references,
+        model_type=model_type,
+        device=device,
+        verbose=False,
+    )
+
+    return [
+        {
+            "precision": round(p.item(), 4),
+            "recall": round(r.item(), 4),
+            "f1": round(f.item(), 4),
+        }
+        for p, r, f in zip(P, R, F1)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Batch Evaluation
 # ---------------------------------------------------------------------------
