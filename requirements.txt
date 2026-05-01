@@ -24,6 +24,7 @@ regex>=2023.10.3
 # --- Evaluation ---
 rouge-score>=0.1.2
 bert-score>=0.3.13
+sacrebleu>=2.4.0
 
 # --- Audio ---
 librosa>=0.10.1

@@ -180,7 +180,7 @@ class SpeechInsightsPipeline:
                 if method == "textrank":
                     summaries[method] = self._run_textrank(text, summ_cfg)
 
-                elif method in ("bart", "t5"):
+                elif method in ("bart", "t5", "pegasus"):
                     summaries[method] = self._run_abstractive(
                         method, chunks, summ_cfg, hierarchical
                     )
@@ -335,6 +335,7 @@ class SpeechInsightsPipeline:
         model_name = abs_cfg.get("model_name", {
             "bart": "facebook/bart-large-cnn",
             "t5": "google/flan-t5-base",
+            "pegasus": "google/pegasus-cnn_dailymail",
         }.get(method, "facebook/bart-large-cnn"))
 
         summarizer = self._get_summarizer(model_name)
@@ -366,7 +367,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "-m", "--methods", nargs="+",
         default=["textrank", "bart", "t5"],
-        help="Summarization methods to run",
+        choices=["textrank", "bart", "t5", "pegasus"],
+        help=(
+            "Summarization methods to run. 'pegasus' is supported but "
+            "off by default because google/pegasus-cnn_dailymail is "
+            "~2.2 GB to download."
+        ),
     )
     args = parser.parse_args()
 

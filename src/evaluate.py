@@ -140,6 +140,230 @@ def compute_bertscore(
     return result
 
 
+def compute_bertscore_per_pair(
+    predictions: list[str],
+    references: list[str],
+    model_type: str = "roberta-large",
+    device: Optional[str] = None,
+) -> list[dict[str, float]]:
+    """
+    Compute BERTScore for each (prediction, reference) pair individually.
+
+    Unlike :func:`compute_bertscore` which returns the average over the batch,
+    this returns one score dict per pair while still doing **a single model
+    forward pass**. This is the right call when you want to report BERTScore
+    per summarization method (e.g. one per BART/T5/TextRank summary) without
+    reloading the embedding model multiple times.
+
+    Args:
+        predictions: List of generated summaries.
+        references:  List of reference summaries (same length).
+        model_type:  Model used for embeddings (default ``"roberta-large"``).
+        device:      ``"cuda"`` or ``"cpu"`` (auto-detected if ``None``).
+
+    Returns:
+        List of ``{"precision", "recall", "f1"}`` dicts, one per pair, each
+        rounded to 4 decimals.
+
+    Raises:
+        ValueError: If list lengths don't match or are empty.
+    """
+    if len(predictions) != len(references):
+        raise ValueError(
+            f"Length mismatch: {len(predictions)} predictions vs {len(references)} references"
+        )
+    if not predictions:
+        raise ValueError("Empty input lists")
+
+    from bert_score import score as bert_score_fn
+
+    P, R, F1 = bert_score_fn(
+        predictions,
+        references,
+        model_type=model_type,
+        device=device,
+        verbose=False,
+    )
+
+    return [
+        {
+            "precision": round(p.item(), 4),
+            "recall": round(r.item(), 4),
+            "f1": round(f.item(), 4),
+        }
+        for p, r, f in zip(P, R, F1)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# METEOR
+# ---------------------------------------------------------------------------
+
+def compute_meteor(prediction: str, reference: str) -> float:
+    """
+    Compute METEOR (Banerjee & Lavie, 2005) between a prediction and reference.
+
+    METEOR improves on ROUGE/BLEU by aligning words via:
+      1. exact match  →  2. stemmed match  →  3. WordNet synonym match,
+    then computing F-mean weighted toward recall, with a penalty for
+    fragmented (out-of-order) matches. It correlates noticeably better with
+    human judgement than ROUGE on summarization tasks.
+
+    Args:
+        prediction: Generated summary text.
+        reference:  Reference summary text.
+
+    Returns:
+        METEOR score in ``[0, 1]``, rounded to 4 decimals. Returns ``0.0`` if
+        either input is empty (consistent with NLTK's behavior on no overlap).
+
+    Raises:
+        LookupError: If NLTK's WordNet corpus cannot be downloaded
+            (e.g. behind a strict firewall). The first call attempts
+            ``nltk.download("wordnet")`` automatically.
+    """
+    if not prediction or not prediction.strip() or not reference or not reference.strip():
+        return 0.0
+
+    import nltk
+    from nltk.translate.meteor_score import single_meteor_score
+
+    def _tokenize(text: str) -> list[str]:
+        try:
+            return nltk.word_tokenize(text.lower())
+        except LookupError:
+            nltk.download("punkt", quiet=True)
+            nltk.download("punkt_tab", quiet=True)
+            return nltk.word_tokenize(text.lower())
+
+    try:
+        from nltk.corpus import wordnet
+        wordnet.synsets("test")  # triggers LookupError if corpus missing
+    except LookupError:
+        nltk.download("wordnet", quiet=True)
+        nltk.download("omw-1.4", quiet=True)
+
+    score = single_meteor_score(_tokenize(reference), _tokenize(prediction))
+    return round(float(score), 4)
+
+
+# ---------------------------------------------------------------------------
+# chrF
+# ---------------------------------------------------------------------------
+
+def compute_chrf(
+    prediction: str,
+    reference: str,
+    word_order: int = 0,
+) -> float:
+    """
+    Compute chrF (Popović, 2015) between a prediction and reference.
+
+    chrF is the F-score over character n-grams (default n=6). It is robust
+    to morphology and minor word-order differences, complementing token-based
+    metrics like ROUGE. Setting ``word_order=2`` enables **chrF++**, which
+    additionally counts word bigrams (Popović, 2017).
+
+    Args:
+        prediction: Generated summary text.
+        reference:  Reference summary text.
+        word_order: Word n-gram order. ``0`` = chrF (default), ``2`` = chrF++.
+
+    Returns:
+        chrF score normalized to ``[0, 1]`` (sacrebleu reports 0–100 natively;
+        we divide by 100 so the value lines up with ROUGE/METEOR/BERTScore in
+        side-by-side displays). Rounded to 4 decimals.
+    """
+    if not prediction or not prediction.strip() or not reference or not reference.strip():
+        return 0.0
+
+    from sacrebleu.metrics import CHRF
+
+    chrf = CHRF(word_order=word_order)
+    score = chrf.sentence_score(prediction, [reference]).score
+    return round(score / 100.0, 4)
+
+
+# ---------------------------------------------------------------------------
+# Reference-quality sanity check
+# ---------------------------------------------------------------------------
+
+# A "real" abstractive summary is usually 5–30% of the source length. Anything
+# above this fraction is more excerpt than summary and tends to inflate
+# extractive baselines on ROUGE/METEOR/chrF.
+_SUSPICIOUS_LENGTH_RATIO = 0.5
+
+# ROUGE-1 F1 between the reference and the source. A genuine summary
+# paraphrases the source, so an overlap above this threshold strongly suggests
+# the "reference" is the source itself (or a near-copy).
+_SUSPICIOUS_OVERLAP_F1 = 0.7
+
+
+def assess_reference_quality(reference: str, source: str) -> dict:
+    """
+    Sanity-check whether a user-provided reference summary actually *is* a
+    summary, or whether it looks like the source transcript itself.
+
+    A frequent mistake — and one that silently corrupts ROUGE comparisons — is
+    uploading the full transcript as the "reference summary". In that case
+    extractive methods (TextRank) appear far stronger than abstractive ones
+    (BART/T5) only because they copy source sentences verbatim, not because
+    they produce better summaries.
+
+    The check uses two complementary heuristics:
+
+    * **Length ratio** — words(reference) / words(source). Real summaries
+      compress aggressively; a ratio above ~0.5 is unusual.
+    * **Lexical overlap** — ROUGE-1 F1 between reference and source. Real
+      summaries paraphrase; a ratio above ~0.7 indicates near-verbatim copy.
+
+    Args:
+        reference: The text the user uploaded as a reference summary.
+        source:    The (cleaned) transcript that summaries were generated from.
+
+    Returns:
+        Dict with:
+
+        - ``length_ratio`` (float): ``ref_words / max(source_words, 1)``.
+        - ``overlap_rouge1`` (float | None): ROUGE-1 F1, or ``None`` if either
+          input was empty.
+        - ``is_suspicious`` (bool): True if either heuristic crosses its threshold.
+        - ``reasons`` (list[str]): Human-readable explanations for the warning.
+    """
+    ref_words = len(reference.split()) if reference else 0
+    src_words = len(source.split()) if source else 0
+    length_ratio = round(ref_words / max(src_words, 1), 4)
+
+    overlap_rouge1: Optional[float] = None
+    if reference.strip() and source.strip():
+        try:
+            overlap_rouge1 = compute_rouge(
+                reference, source, rouge_types=["rouge1"]
+            )["rouge1"]["f1"]
+        except ValueError:
+            overlap_rouge1 = None
+
+    reasons: list[str] = []
+    if length_ratio > _SUSPICIOUS_LENGTH_RATIO:
+        reasons.append(
+            f"reference is {length_ratio:.0%} of the source length "
+            f"({ref_words} vs {src_words} words) — a real summary is usually "
+            "5–30% of the source"
+        )
+    if overlap_rouge1 is not None and overlap_rouge1 > _SUSPICIOUS_OVERLAP_F1:
+        reasons.append(
+            f"reference shares {overlap_rouge1:.0%} ROUGE-1 overlap with the "
+            "source — a genuine summary paraphrases rather than copies"
+        )
+
+    return {
+        "length_ratio": length_ratio,
+        "overlap_rouge1": overlap_rouge1,
+        "is_suspicious": bool(reasons),
+        "reasons": reasons,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Batch Evaluation
 # ---------------------------------------------------------------------------

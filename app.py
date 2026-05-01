@@ -8,6 +8,7 @@ Run with (from activated venv): python -m streamlit run app.py
 """
 
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -95,8 +96,6 @@ def try_load_hf_summarizer(model_name: str):
     Returns None if the model cannot be downloaded or configured (common on
     corporate VPNs that block huggingface.co).
     """
-    import logging
-
     from src.summarize_abstractive import AbstractiveSummarizer
 
     log = logging.getLogger(__name__)
@@ -140,12 +139,16 @@ def render_sidebar() -> dict:
         help="Larger models are more accurate but slower.",
     )
 
-    # Summarization methods
+    # Summarization methods. Pegasus is available but not in the default
+    # selection because google/pegasus-cnn_dailymail is ~2.2 GB on first run.
     methods = st.sidebar.multiselect(
         "Summarization Methods",
-        options=["TextRank", "BART", "T5"],
+        options=["TextRank", "BART", "T5", "Pegasus"],
         default=["TextRank", "BART", "T5"],
-        help="Select which summarizers to run.",
+        help=(
+            "Select which summarizers to run. Pegasus "
+            "(google/pegasus-cnn_dailymail) is ~2.2 GB on first download."
+        ),
     )
 
     # Summary length
@@ -170,6 +173,20 @@ def render_sidebar() -> dict:
         help="Upload a reference summary to compute ROUGE scores.",
     )
 
+    # BERTScore is opt-in because the first run downloads roberta-large
+    # (~1.4 GB) and can take 10–60s on CPU per pipeline run. Once cached,
+    # subsequent runs in the same Streamlit session reuse the loaded model.
+    compute_bertscore = st.sidebar.checkbox(
+        "Compute BERTScore",
+        value=False,
+        help=(
+            "Adds semantic similarity scores (captures paraphrase that ROUGE misses). "
+            "First run downloads roberta-large (~1.4 GB) and is slow on CPU; "
+            "later runs reuse the cached model. Requires a reference summary."
+        ),
+        disabled=reference_file is None,
+    )
+
     # Process button
     process_btn = st.sidebar.button(
         "▶ Process Audio",
@@ -184,6 +201,7 @@ def render_sidebar() -> dict:
         "methods": [m.lower() for m in methods],
         "summary_params": length_map[summary_style],
         "reference_file": reference_file,
+        "compute_bertscore": compute_bertscore,
         "process": process_btn,
     }
 
@@ -197,7 +215,12 @@ def process_audio(settings: dict) -> dict:
     from src.preprocess import preprocess_transcript
     from src.chunking import chunk_text
     from src.summarize_extractive import textrank_summarize
-    from src.evaluate import compute_rouge
+    from src.evaluate import (
+        assess_reference_quality,
+        compute_chrf,
+        compute_meteor,
+        compute_rouge,
+    )
     from src.transcribe import FFmpegNotFoundError
 
     results = {"timings": {}}
@@ -288,6 +311,26 @@ def process_audio(settings: dict) -> dict:
                 )
                 results["timings"]["t5"] = round(time.perf_counter() - t0, 2)
 
+    if "pegasus" in methods:
+        # First download is ~2.2 GB and very slow on CPU; surface that in the
+        # spinner so users aren't left wondering why the app appears stuck.
+        with st.spinner(
+            "Loading Pegasus and summarizing "
+            "(first run downloads ~2.2 GB; CPU inference is slow)..."
+        ):
+            summarizer = try_load_hf_summarizer("google/pegasus-cnn_dailymail")
+            if summarizer is None:
+                hf_skipped.append("Pegasus (`google/pegasus-cnn_dailymail`)")
+            else:
+                t0 = time.perf_counter()
+                summaries["pegasus"] = summarizer.summarize_long(
+                    chunks,
+                    hierarchical=True,
+                    max_length=params["max_length"],
+                    min_length=params["min_length"],
+                )
+                results["timings"]["pegasus"] = round(time.perf_counter() - t0, 2)
+
     if hf_skipped:
         st.warning(
             "Could not load from Hugging Face (often blocked on a work VPN): "
@@ -302,12 +345,72 @@ def process_audio(settings: dict) -> dict:
     # --- Evaluation (if reference provided) ---
     if settings["reference_file"]:
         reference = settings["reference_file"].read().decode("utf-8").strip()
+
+        # Sanity-check the reference against the cleaned transcript. A common
+        # mistake is uploading the full transcript as the "reference summary",
+        # which silently inflates extractive baselines on overlap-based
+        # metrics. The result is rendered as a banner in the Evaluation tab.
+        results["reference_quality"] = assess_reference_quality(
+            reference=reference,
+            source=preprocessed["cleaned"],
+        )
+
         evaluation = {}
         for method, summary in summaries.items():
             try:
                 evaluation[method] = compute_rouge(summary, reference)
             except ValueError:
                 evaluation[method] = {"error": "Could not compute ROUGE"}
+                continue
+
+            # METEOR + chrF are cheap (ms each, no model download beyond a
+            # one-time NLTK WordNet corpus). They are always computed alongside
+            # ROUGE and degrade gracefully if their backends are unavailable.
+            try:
+                evaluation[method]["meteor"] = compute_meteor(summary, reference)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "METEOR failed for %s: %s", method, exc
+                )
+
+            try:
+                evaluation[method]["chrf"] = compute_chrf(summary, reference)
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "chrF failed for %s: %s", method, exc
+                )
+
+        # Optional BERTScore — opt-in because the embedding model is ~1.4 GB
+        # and cold-start can take a while on CPU. Computed once for all
+        # summaries to share the model load.
+        if settings.get("compute_bertscore"):
+            from src.evaluate import compute_bertscore_per_pair
+
+            scorable = [
+                (m, s) for m, s in summaries.items()
+                if s and "error" not in evaluation.get(m, {})
+            ]
+            if scorable:
+                with st.spinner(
+                    "Computing BERTScore (first run downloads roberta-large)..."
+                ):
+                    t0 = time.perf_counter()
+                    try:
+                        per_pair = compute_bertscore_per_pair(
+                            predictions=[s for _, s in scorable],
+                            references=[reference] * len(scorable),
+                        )
+                        for (method, _), bs in zip(scorable, per_pair):
+                            evaluation[method]["bertscore"] = bs
+                        results["timings"]["bertscore"] = round(
+                            time.perf_counter() - t0, 2
+                        )
+                    except Exception as exc:
+                        st.warning(
+                            f"BERTScore could not be computed: {exc}. "
+                            "ROUGE results above are unaffected."
+                        )
+
         results["evaluation"] = evaluation
         results["reference"] = reference
     else:
@@ -362,7 +465,12 @@ def render_summaries_tab(results: dict):
     cols = st.columns(len(summaries))
     for col, (method, summary) in zip(cols, summaries.items()):
         with col:
-            label = {"textrank": "TextRank (Extractive)", "bart": "BART (Abstractive)", "t5": "Flan-T5 (Abstractive)"}
+            label = {
+                "textrank": "TextRank (Extractive)",
+                "bart": "BART (Abstractive)",
+                "t5": "Flan-T5 (Abstractive)",
+                "pegasus": "Pegasus (Abstractive)",
+            }
             st.subheader(label.get(method, method.upper()))
             st.write(summary)
             word_count = len(summary.split())
@@ -377,26 +485,70 @@ def render_evaluation_tab(results: dict):
         )
         return
 
+    # Warn loudly when the uploaded reference appears to be the source
+    # transcript itself. Without this banner, a tester could conclude
+    # "TextRank wins" from numbers that are really just rewarding sentence
+    # copying — see fix #3 in the project chat history for the motivating run.
+    quality = results.get("reference_quality")
+    if quality and quality["is_suspicious"]:
+        bullet_reasons = "\n".join(f"- {r}" for r in quality["reasons"])
+        st.warning(
+            "**Your reference summary looks like the source transcript "
+            "itself, not a summary.**\n\n"
+            f"{bullet_reasons}\n\n"
+            "ROUGE, METEOR, and chrF all measure overlap with the reference, "
+            "so when the reference *is* the source, **extractive methods like "
+            "TextRank will appear to win** simply because they copy source "
+            "sentences verbatim. BERTScore is somewhat more robust but is "
+            "still affected. For a fair comparison, upload a short reference "
+            "summary (typically 5–30% of the source length) that paraphrases "
+            "the key points."
+        )
+
     import pandas as pd
 
     eval_data = results["evaluation"]
     rows = []
+    any_bertscore = False
+    any_meteor = False
+    any_chrf = False
     for method, scores in eval_data.items():
         if "error" in scores:
             continue
-        rows.append({
+        row = {
             "Model": method.upper(),
             "ROUGE-1 (F1)": scores["rouge1"]["f1"],
             "ROUGE-2 (F1)": scores["rouge2"]["f1"],
             "ROUGE-L (F1)": scores["rougeL"]["f1"],
-        })
+        }
+        if "meteor" in scores:
+            row["METEOR"] = scores["meteor"]
+            any_meteor = True
+        if "chrf" in scores:
+            row["chrF"] = scores["chrf"]
+            any_chrf = True
+        if "bertscore" in scores:
+            row["BERTScore (F1)"] = scores["bertscore"]["f1"]
+            any_bertscore = True
+        rows.append(row)
 
     if rows:
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # Bar chart
+        # Bar chart spans every available metric (ROUGE always, METEOR/chrF
+        # when computed, BERTScore when the user opted in). All values are
+        # normalized to [0, 1] in src.evaluate so they share one y-axis.
         import plotly.express as px
+
+        extra_titles = []
+        if any_meteor or any_chrf:
+            extra_titles.append("METEOR/chrF")
+        if any_bertscore:
+            extra_titles.append("BERTScore")
+        title = "ROUGE Score Comparison" if not extra_titles else (
+            "ROUGE + " + " + ".join(extra_titles) + " Comparison"
+        )
 
         df_melted = df.melt(id_vars="Model", var_name="Metric", value_name="Score")
         fig = px.bar(
@@ -405,10 +557,36 @@ def render_evaluation_tab(results: dict):
             y="Score",
             color="Model",
             barmode="group",
-            title="ROUGE Score Comparison",
+            title=title,
         )
         fig.update_layout(yaxis_range=[0, 1])
         st.plotly_chart(fig, use_container_width=True)
+
+        captions = []
+        if any_meteor:
+            captions.append(
+                "**METEOR** aligns words by exact match → stem → WordNet synonym, "
+                "so it credits paraphrase that ROUGE penalizes."
+            )
+        if any_chrf:
+            captions.append(
+                "**chrF** is the F-score over character n-grams; robust to "
+                "morphology and minor word-order changes. Reported on a 0–1 scale "
+                "(sacrebleu's native 0–100 divided by 100)."
+            )
+        if any_bertscore:
+            captions.append(
+                "**BERTScore** measures semantic similarity via contextual "
+                "embeddings (roberta-large). Values for unrelated text typically "
+                "still sit around 0.80, so look at *relative* differences."
+            )
+        elif results["evaluation"]:
+            captions.append(
+                "Tip: enable **Compute BERTScore** in the sidebar for a semantic "
+                "similarity score that complements ROUGE's n-gram overlap."
+            )
+        if captions:
+            st.caption("  \n".join(captions))
 
 
 def render_stats_tab(results: dict):
