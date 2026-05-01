@@ -71,6 +71,19 @@ summarization:
       length_penalty: 2.0
       no_repeat_ngram_size: 3
 
+    pegasus:
+      # CNN/DailyMail-fine-tuned variant — multi-sentence summaries, fairest
+      # comparison against facebook/bart-large-cnn (same training corpus).
+      # Swap to "google/pegasus-xsum" for one-sentence extreme summaries, or
+      # "google/pegasus-large" for the un-fine-tuned base model.
+      model_name: "google/pegasus-cnn_dailymail"
+      max_input_tokens: 1024
+      max_summary_length: 256
+      min_summary_length: 56
+      num_beams: 4
+      length_penalty: 2.0
+      no_repeat_ngram_size: 3
+
   hierarchical: true            # two-pass summarization for long inputs
 
 # --- Evaluation ---

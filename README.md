@@ -9,7 +9,8 @@ This system converts audio recordings (lectures, meetings, podcasts) into concis
 - **Whisper** — Automatic speech recognition (ASR) for audio-to-text transcription
 - **TextRank** — Extractive summarization baseline (Mihalcea & Tarau, 2004)
 - **BART** — Abstractive summarization via `facebook/bart-large-cnn` (Lewis et al., 2019)
-- **T5** — Abstractive summarization via `t5-base` (Raffel et al., 2020)
+- **T5 / Flan-T5** — Abstractive summarization via `google/flan-t5-base` (Raffel et al., 2020; Chung et al., 2022)
+- **Pegasus** — Abstractive summarization via `google/pegasus-cnn_dailymail` (Zhang et al., 2020) — opt-in (~2.2 GB)
 
 The pipeline includes preprocessing (filler word removal, normalization, sentence segmentation), sentence-aware chunking for long transcripts, and evaluation using ROUGE and BERTScore metrics.
 
@@ -163,6 +164,8 @@ All hyperparameters live in `configs/config.yaml`. Key settings:
 | `chunking.max_chunk_tokens` | `800` | Max tokens per chunk |
 | `summarization.abstractive.bart.model_name` | `facebook/bart-large-cnn` | BART model |
 | `summarization.abstractive.bart.max_summary_length` | `256` | Max summary tokens |
+| `summarization.abstractive.t5.model_name` | `google/flan-t5-base` | Flan-T5 model |
+| `summarization.abstractive.pegasus.model_name` | `google/pegasus-cnn_dailymail` | Pegasus model (swap to `pegasus-xsum` for one-sentence summaries) |
 | `summarization.hierarchical` | `true` | Two-pass summarization for long inputs |
 
 ## Documentation
@@ -179,4 +182,6 @@ See the `docs/` folder for detailed technical documentation:
 1. Radford et al. (2022). [Robust Speech Recognition via Large-Scale Weak Supervision.](https://arxiv.org/abs/2212.04356) *arXiv:2212.04356*
 2. Lewis et al. (2019). [BART: Denoising Sequence-to-Sequence Pre-training.](https://arxiv.org/abs/1910.13461) *arXiv:1910.13461*
 3. Mihalcea & Tarau (2004). [TextRank: Bringing Order into Texts.](https://web.eecs.umich.edu/~mihalcea/papers/mihalcea.emnlp04.pdf) *EMNLP 2004*
+4. Raffel et al. (2020). [Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer.](https://arxiv.org/abs/1910.10683) *JMLR 21(140)*
+5. Zhang et al. (2020). [PEGASUS: Pre-training with Extracted Gap-sentences for Abstractive Summarization.](https://arxiv.org/abs/1912.08777) *ICML 2020*
 

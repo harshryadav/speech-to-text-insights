@@ -62,7 +62,12 @@ class AbstractiveSummarizer:
     @property
     def max_input_tokens(self) -> int:
         """Maximum input length the model was designed for."""
-        if "bart" in self.model_name.lower():
+        name = self.model_name.lower()
+        if "bart" in name:
+            return 1024
+        if "pegasus" in name:
+            # All published Pegasus checkpoints (large / cnn_dailymail / xsum / etc.)
+            # use a 1024-token max source length.
             return 1024
         # T5 and Flan-T5 default context window
         return 512

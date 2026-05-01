@@ -139,12 +139,16 @@ def render_sidebar() -> dict:
         help="Larger models are more accurate but slower.",
     )
 
-    # Summarization methods
+    # Summarization methods. Pegasus is available but not in the default
+    # selection because google/pegasus-cnn_dailymail is ~2.2 GB on first run.
     methods = st.sidebar.multiselect(
         "Summarization Methods",
-        options=["TextRank", "BART", "T5"],
+        options=["TextRank", "BART", "T5", "Pegasus"],
         default=["TextRank", "BART", "T5"],
-        help="Select which summarizers to run.",
+        help=(
+            "Select which summarizers to run. Pegasus "
+            "(google/pegasus-cnn_dailymail) is ~2.2 GB on first download."
+        ),
     )
 
     # Summary length
@@ -307,6 +311,26 @@ def process_audio(settings: dict) -> dict:
                 )
                 results["timings"]["t5"] = round(time.perf_counter() - t0, 2)
 
+    if "pegasus" in methods:
+        # First download is ~2.2 GB and very slow on CPU; surface that in the
+        # spinner so users aren't left wondering why the app appears stuck.
+        with st.spinner(
+            "Loading Pegasus and summarizing "
+            "(first run downloads ~2.2 GB; CPU inference is slow)..."
+        ):
+            summarizer = try_load_hf_summarizer("google/pegasus-cnn_dailymail")
+            if summarizer is None:
+                hf_skipped.append("Pegasus (`google/pegasus-cnn_dailymail`)")
+            else:
+                t0 = time.perf_counter()
+                summaries["pegasus"] = summarizer.summarize_long(
+                    chunks,
+                    hierarchical=True,
+                    max_length=params["max_length"],
+                    min_length=params["min_length"],
+                )
+                results["timings"]["pegasus"] = round(time.perf_counter() - t0, 2)
+
     if hf_skipped:
         st.warning(
             "Could not load from Hugging Face (often blocked on a work VPN): "
@@ -441,7 +465,12 @@ def render_summaries_tab(results: dict):
     cols = st.columns(len(summaries))
     for col, (method, summary) in zip(cols, summaries.items()):
         with col:
-            label = {"textrank": "TextRank (Extractive)", "bart": "BART (Abstractive)", "t5": "Flan-T5 (Abstractive)"}
+            label = {
+                "textrank": "TextRank (Extractive)",
+                "bart": "BART (Abstractive)",
+                "t5": "Flan-T5 (Abstractive)",
+                "pegasus": "Pegasus (Abstractive)",
+            }
             st.subheader(label.get(method, method.upper()))
             st.write(summary)
             word_count = len(summary.split())
